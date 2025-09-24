@@ -1,2 +1,5 @@
-# CovidVaccinationTendencies
-We performed data analysis on state's covid vaccination to determine if political affiliation impacted vaccination rates
+# Covid Vaccination Tendencies
+We performed data analysis on state's covid vaccination history to determine if a state's political affiliation impacted their vaccination rates.
+
+Tools: R, quarto, excel, ggplot, tidyverse, web scraping
+
