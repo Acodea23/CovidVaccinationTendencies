@@ -1,0 +1,296 @@
+---
+title: "Project Vaccine Final"
+author: Matthew Wilson and Corbin Brinkerhoff
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+Libraries Used
+
+```{r, warning=FALSE}
+suppressMessages(library(tidyverse))
+suppressMessages(library(readxl))
+suppressMessages(library(rvest))
+suppressMessages(library(ggplot2))
+suppressMessages(library(scales))
+
+```
+
+How our data is collected:
+
+The data was collected by state for all information. The political party of each state was determined by how they voted in the 2020 Presidential Election. If the margin of victory between the democrat and republican parties was less than 5% it was labeled as a swing state, otherwise it was labeled as a state affiliated with the party it voted for. We then calculated gathered data of the proportion of people that had received their first vaccination and also the proportion of people that had completed their vaccinations. We also looked at the number of vaccines wasted by state through subtracting the number of doses sent to a state by the number of vaccines received by state. We then found the average value for these by party affiliation by finding the mean value of these across the states affiliated with the party. One limitation of this method is that each state’s data was given equal weight regardless of the population, but this is acceptable since we wanted to study connections between party affiliation of states and their uses of the vaccine. We also looked at the median income of states and we turned it into a factor of less than 50k, 50k-60k, 60k-70k and greater than 70k a year. We originally had more variables we considered but upon exploring the data we limited it to these variables.
+
+Web Scraping
+
+```{r,eval=FALSE}
+#saved url and webpage for ease
+url <-"https://en.wikipedia.org/wiki/2020_United_States_presidential_election"
+webpage <-read_html(url)
+
+#use rvest package to grab table from selected webpage
+tables <- webpage|>
+  html_nodes('table')
+selected_table <- tables[[31]]
+
+#use rvest package to convert wanted table into dataframe
+df <- selected_table |> html_table(fill = TRUE)
+
+#writes the table to a text file for ease of manipulation
+write.table(df, "election_results.txt", sep= "\t",row.names=FALSE)
+
+```
+
+Cleaning Up Data
+
+```{r,eval=FALSE}
+#CLEAN VOTER DATA
+
+df <- read.table("election_results.txt",header = T)
+
+#grab the columns I want
+colnames(df)[1:7] <- c("States","DemVotes","DemPerc","DemEV","RepVotes","RepPerc","RepEV")
+
+results <- df|>
+  select(States,DemPerc,RepPerc)
+
+#get rid of the districts within states
+NotWanted <- c(1,22,23,32,33,34,58,59)
+results <- slice(results, -NotWanted)
+
+# get rid of % symbols, make everything numeric and then calculate difference between voters
+results <- results |>
+  mutate(
+    DP = as.numeric(str_remove_all(DemPerc,"%")),
+    RP = as.numeric(str_remove_all(RepPerc,"%")), 
+    dif = (DP-RP))|>
+  select(States,DP,RP,dif)
+
+# clean up astrisks and things
+results$States[[20]] <- "Maine"
+results$States[[28]] <- "Nebraska"
+results$States[[29]] <- "Nevada"
+results$States[[31]] <- "New Jersey"
+results$States[[44]] <- "Texas"
+
+
+parties <- results |>
+  mutate(Party = case_when(
+    dif < -5 ~ "Republican",
+    dif >= -5 & dif <= 5 ~ "Swing",
+    dif > 5 ~ "Democrat"
+  ))|>
+  select(States,Party)
+
+glimpse(parties)
+```
+
+Creating Vaccination Data
+
+```{r,eval=FALSE}
+# VACCINATION DATA
+
+StateStats<-read_excel('CDCDATA.xlsx', sheet='state_data_only')|>
+  select(NAME,total_population,medincome,percent_healthcare_employment,percent_healthcare_employment)|>
+  rename(States=NAME,total_state_pop=total_population)
+
+StateStats <- as.data.frame(StateStats)
+
+
+StateVaccineData<-read_excel('CDCDATA.xlsx', sheet='state')|>
+  select(LongName,Doses_Administered,Administered_Dose1_Recip,Administered_Dose2_Recip,Doses_Distributed,Series_Complete_Yes
+  )|>
+  rename(States=LongName,Admin_Dose1=Administered_Dose1_Recip,Admin_Dose2=Administered_Dose2_Recip)
+
+StateVaccineData <- as.data.frame(StateVaccineData)
+
+
+
+
+
+df <- parties |>
+  left_join(StateStats, join_by("States"))|>
+  left_join(StateVaccineData, join_by("States"))|>
+  mutate(med_inc = case_when(
+    medincome < 50000 ~ "<50k",
+    medincome >= 50000 & medincome <= 60000 ~ "50k-60k",
+    medincome >= 60000 & medincome <= 70000 ~ "60k-70k",
+    medincome > 70000 ~ ">70k"
+  ))
+
+
+df <- df|>
+  mutate(perc_first =
+           Admin_Dose1/total_state_pop)|>
+  mutate(perc_finish = 
+           Series_Complete_Yes/total_state_pop)|>
+  mutate(wasted_doses = Doses_Distributed-Doses_Administered)|>
+  select(-c(Doses_Administered,Doses_Distributed))
+
+
+write_csv(df, file = "vaccine_data_clean.csv")
+```
+
+Preparation For Graphs
+
+```{r}
+df <- read.csv("vaccine_data_clean.csv")
+
+by_party_inc <- df|>
+  group_by(Party,med_inc)|>
+  summarise(mean_fin = mean(perc_finish),
+            mean_start = mean(perc_first),
+            mean_waste = mean(wasted_doses),.groups = "drop")
+
+by_party <- df|>
+  group_by(Party)|>
+  summarise(mean_fin = mean(perc_finish),
+            mean_start = mean(perc_first),
+            mean_waste = mean(wasted_doses),
+            mean_diff = mean(perc_finish/perc_first))
+
+by_inc <- df |>
+  group_by(med_inc)|>
+  summarise(mean_waste = mean(wasted_doses))
+```
+
+Anova Tables
+
+```{r}
+
+
+aovperc_first<-aov(perc_first ~ Party*medincome,data=df)
+
+aovperc_finish<-aov(perc_finish ~ Party*medincome,data=df)
+
+aovwasted_doses<-aov(wasted_doses ~ Party*medincome,data=df)
+
+aovcomplete_party <- aov(perc_finish ~ Party, data = df)
+
+aovwasted_byincome <- aov(wasted_doses ~ med_inc, data = df )
+```
+
+All Together Graph:
+
+This graph is a bar graph that splits up the results by median income and then graphs the percentage of the population that has completed their vaccines by party. It is interesting to note that all states considered swing states had a median income in the range of 50-60k a year. That being said, we note that the percentage of people by party who completed their vaccines was roughly the same regardless of the median income. The difference between the Democratic and Republican state vaccination patterns is roughly the same regardless of median income. This caused us to believe that the median income of a state, and the interaction of median income and party affiliation have no impact on a state’s vaccination trends. The ANOVA test we performed supports this conclusion.
+
+```{r}
+by_party_inc|>
+  ggplot(aes(x = Party, y =mean_fin, fill = Party)) +
+    geom_bar(stat = "identity")+
+  facet_wrap(~med_inc)+
+  scale_fill_manual(values = c("Democrat" = "lightblue", 
+                      "Republican" = "salmon", "Swing" = "lightgreen"))+
+  labs(
+    title = "Population With Complete Vaccination",
+    subtitle = "Sectioned by Party Affiliation and Median Income",
+    x = "Party",
+    y = "Percent Finished"
+  )+
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  scale_y_continuous(labels= label_percent())
+```
+
+Separate graphs:
+
+Due to prior analysis our other graphs focused on party affiliation and its impact on starting, finishing, and wasting vaccines. We found that for both starting and finishing vaccinations, the democrat states had the highest percentage of participation, followed by swing states, and then by republican states. This could hint to the idea that there is a greater correlation between how an individual votes and their vaccination activities than how a state votes and its vaccination activities. Due to the fact that as a state has more republican voters and less democratic voters their proportion of people vaccinated decreases we believe that the difference may be even more extreme than the data collected suggests. It is interesting that the proportion of people who finished their vaccines compared to the proportion who started their vaccines is almost identical across party affiliation, so maybe the type of people to finish what they start has no correlation to voting patterns.
+
+```{r}
+by_party|>
+  ggplot(aes(x = Party, y = mean_start, fill = Party)) +
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c("Democrat" = "lightblue", 
+                               "Republican" = "salmon", "Swing" = "lightgreen"))+
+  labs(
+    title = "Percent With First Dose by Party",
+    x = "Party",
+    y = "Started Vaccinations"
+  )+
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_minimal()+
+  scale_y_continuous(labels= label_percent())
+
+summary(aovperc_first)
+```
+
+```{r}
+by_party|>
+  ggplot(aes(x = Party, y = mean_fin, fill = Party)) +
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c("Democrat" = "lightblue", 
+                               "Republican" = "salmon", "Swing" = "lightgreen"))+
+  labs(
+    title = "Percent With Completed Vaccination by Party",
+    x = "Party",
+    y = "Completed Vaccination"
+  )+
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_minimal()+
+  scale_y_continuous(labels= label_percent())
+
+summary(aovperc_finish)
+```
+
+```{r}
+by_party|>
+  ggplot(aes(x = Party, y = mean_diff, fill = Party)) +
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c("Democrat" = "lightblue", 
+                               "Republican" = "salmon", "Swing" = "lightgreen"))+
+  labs(
+    title = "Proportion of Vaccinations Completed",
+    x = "Party",
+    y = "Proportion Completed"
+  )+
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_minimal()
+
+summary(aovcomplete_party)
+```
+
+Wasted Vaccines:
+
+Our first graph would cause us to believe that there is a trend in swing states to waste more vaccines, but from prior exploration and analysis we knew that swing states were only found in the median income tier of 50-60k. Thus we decided to explore wasted vaccines by median incomes and we found that our new analysis may better represent what is occurring where there is a difference between the amount of wasted vaccines in terms of median income. Our ANOVA testing does not support this idea, so we can not conclude any trends. What is interesting is that there is not a linear trend between vaccines wasted and median income; this might be part of the reason why our ANOVA testing found nothing significant. These facts together make us wonder if there are further underlying factors occurring that we do not see.
+
+```{r}
+by_party|>
+  ggplot(aes(x = Party, y = mean_waste, fill = Party)) +
+    geom_bar(stat = "identity")+
+  scale_fill_manual(values = c("Democrat" = "lightblue", 
+                      "Republican" = "salmon", "Swing" = "lightgreen"))+
+  labs(
+    title = "Number of Vaccines Wasted by Party",
+    x = "Party",
+    y = "Number Wasted"
+  )+
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_minimal()
+
+summary(aovwasted_doses)
+```
+
+```{r}
+
+# amount wasted by income
+by_inc|>
+  ggplot(aes(x = med_inc, y = mean_waste, fill = med_inc)) +
+  geom_bar(stat = "identity")+
+  labs(
+    title = "Number of Vaccines Wasted by Median Income",
+    x = "Median Income",
+    y = "Number Wasted",
+    fill = "Med. Income"
+  )+
+  scale_fill_manual(values = c("<50k" = "purple",
+                               "50k-60k" = "salmon", "60k-70k" = "orange", ">70k"="lightgreen"))+
+ 
+  scale_x_discrete(guide = guide_axis(angle = 45))+
+  theme_minimal()
+
+summary(aovwasted_byincome)
+```
+
+Conclusion:
+
+Upon analyzing different vaccination trends, we found that there are not many factors that determined the proportion of people vaccinated within a state. However, one factor did show a statistical difference in the amount of people vaccinated. Political affiliation did impact how many got vaccinated in each state, showing that if you are in a democratic state, you are likely to have a greater amount of people with the COVID-19 vaccine.
